@@ -1,1 +1,118 @@
 
+name: Multi-stage CI Pipeline
+
+# 🚨 DÉCLENCHEURS - Quand le workflow s'exécute
+on:
+  push:
+    branches: [ main ]      # À chaque push sur main
+  pull_request:
+    branches: [ main ]      # À chaque PR vers main
+
+jobs:
+  # 📋 JOB 1: LINTING - Vérification du style de code
+  lint:
+    name: "🔍 Lint Code"
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Étape 1: Récupérer le code source
+      - name: "📥 Checkout code"
+        uses: actions/checkout@v4
+        
+      # Étape 2: Installer Node.js
+      - name: "📦 Setup Node.js"
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'          # 🚀 Cache automatique des dépendances
+          
+      # Étape 3: Installer les dépendances
+      - name: "⚙️ Install dependencies"
+        run: npm ci
+        
+      # Étape 4: Exécuter le linter
+      - name: "✅ Run linter"
+        run: npm run lint
+
+  # 🧪 JOB 2: TESTS & BUILD - Matrix strategy
+  test-and-build:
+    name: "🧪 Test & Build (Node ${{ matrix.node-version }} on ${{ matrix.os }})"
+    needs: lint              # ⏳ Attend que le lint soit réussi
+    runs-on: ${{ matrix.os }}
+    
+    # 🔄 MATRIX STRATEGY - Teste sur plusieurs environnements
+    strategy:
+      matrix:
+        node-version: [16, 18]                          # 2 versions Node.js
+        os: [ubuntu-latest, windows-latest]             # 2 OS différents
+        # = 4 jobs au total (2x2 combinaisons)
+        
+    steps:
+      - name: "📥 Checkout code"
+        uses: actions/checkout@v4
+        
+      - name: "📦 Setup Node.js ${{ matrix.node-version }}"
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          
+      - name: "⚙️ Install dependencies"
+        run: npm ci
+        
+      # Tests avec couverture de code
+      - name: "🧪 Run tests with coverage"
+        run: npm run test:coverage
+        
+      # Upload des rapports de couverture
+      - name: "📊 Upload coverage reports"
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: coverage/
+          retention-days: 7   # Conservé 7 jours
+        
+      # Build de l'application
+      - name: "🏗️ Build application"
+        run: npm run build
+        
+      # Upload des artifacts de build
+      - name: "📦 Upload build artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: dist/
+          retention-days: 30  # Conservé 30 jours
+
+  # 🚀 JOB 3: PRÉPARATION DÉPLOIEMENT - Seulement sur main
+  prepare-deployment:
+    name: "🚀 Prepare Deployment"
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    # ⚠️ Seulement sur push vers main (pas sur PR)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      # Télécharge les artifacts de build
+      - name: "📥 Download build artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: build-ubuntu-latest-node18  # Version de production
+          path: ./build
+          
+      # Crée le package de déploiement
+      - name: "📋 Create deployment package"
+        run: |
+          mkdir -p deployment
+          cp -r build/* deployment/
+          echo "Build completed at: $(date)" > deployment/build-info.txt
+          echo "Commit SHA: ${{ github.sha }}" >> deployment/build-info.txt
+          echo "Build URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> deployment/build-info.txt
+          
+      # Upload du package final
+      - name: "🎯 Upload deployment package"
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package
+          path: deployment/
+          retention-days: 90  # Conservé 90 jours
